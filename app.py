@@ -3,18 +3,43 @@
 import os, json
 import numpy as np
 import pandas as pd
-import streamlit as st
-import plotly.graph_objects as go
-import plotly.express as px
+import streamlit as st  # ⬅️ ابتدا استریم‌لیت را ایمپورت می‌کنیم تا بتوانیم خطا را دوستانه نشان دهیم
 from pathlib import Path
 from datetime import datetime
 
+# --- نصب خودکار پکیج‌های موردنیاز در صورت نبودن ---
+def _ensure_pkg(pkg, version=None):
+    """Try to import; if missing, pip install quietly."""
+    try:
+        __import__(pkg)
+        return True
+    except Exception:
+        try:
+            import sys, subprocess
+            if version:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", f"{pkg}=={version}"])
+            else:
+                subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", pkg])
+            __import__(pkg)
+            return True
+        except Exception as e:
+            st.error(f"نصب خودکار بسته «{pkg}» انجام نشد. لطفاً آن را در requirements.txt اضافه کنید یا دستی نصب کنید. جزئیات: {e}")
+            return False
+
+# تلاش برای فراهم بودن plotly
+if not _ensure_pkg("plotly", "5.22.0"):
+    st.stop()
+import plotly.graph_objects as go
+import plotly.express as px
+
+# scikit-learn اختیاری: اگر نبود، برنامه ادامه می‌دهد ولی خوشه‌بندی غیرفعال می‌شود
+SKLEARN_OK = _ensure_pkg("scikit_learn", "1.5.0") or _ensure_pkg("sklearn", "1.5.0")
 try:
-    from sklearn.cluster import KMeans
-    SKLEARN_OK = True
+    from sklearn.cluster import KMeans  # type: ignore
 except Exception:
     SKLEARN_OK = False
 
+# ───────────────────────── تنظیمات پایه ─────────────────────────
 st.set_page_config(page_title="پرسشنامه و داشبورد مدیریت دارایی", layout="wide")
 BASE = Path("."); DATA_DIR = BASE/"data"; ASSETS_DIR = BASE/"assets"
 DATA_DIR.mkdir(exist_ok=True); ASSETS_DIR.mkdir(exist_ok=True)
@@ -39,7 +64,7 @@ h1,h2,h3,h4{ color:#16325c; }
   unicode-bidi:isolate; direction: rtl; white-space: normal;}
 .q-desc{ color:#222; font-size:14px; line-height:1.9; margin-bottom:10px; }
 .q-num{ display:inline-block; background:#e8f0fe; color:#16325c; font-weight:700; border-radius:8px; padding:2px 8px; margin-left:6px; font-size:12px;}
-.q-question{ color:#0f3b8f; font-weight:700; margin:.2rem 0 .4rem 0; } /* خودِ متن سؤالها آبی تیره */
+.q-question{ color:#0f3b8f; font-weight:700; margin:.2rem 0 .4rem 0; }
 
 .kpi{ border-radius:14px; padding:16px 18px; border:1px solid #e6ecf5;
   background:linear-gradient(180deg,#ffffff 0%,#f6f9ff 100%); box-shadow:0 8px 20px rgba(0,0,0,0.05); min-height:96px;}
@@ -47,7 +72,6 @@ h1,h2,h3,h4{ color:#16325c; }
 .kpi .value{ color:#0f3b8f; font-size:22px; font-weight:800; }
 .kpi .sub{ color:#6b7c93; font-size:12px; }
 
-/* پنل‌های سه‌بعدی آبی کم‌رنگ برای هر داشبورد */
 .panel{
   background: linear-gradient(180deg,#f2f7ff 0%, #eaf3ff 100%);
   border:1px solid #d7e6ff; border-radius:16px; padding:16px 18px; margin:12px 0 18px 0;
@@ -55,14 +79,13 @@ h1,h2,h3,h4{ color:#16325c; }
 }
 .panel h3, .panel h4{ margin-top:0; color:#17407a; }
 
-/* ویدجت‌ها */
 .stTabs [role="tab"]{ direction: rtl; }
 </style>
 """, unsafe_allow_html=True)
 
 PLOTLY_TEMPLATE = "plotly_white"
 
-# ---------- Load topics ----------
+# ─────────────────────── بارگذاری موضوعات ───────────────────────
 TOPICS_PATH = BASE/"topics.json"
 if not TOPICS_PATH.exists():
     st.error("فایل topics.json پیدا نشد. آن را کنار app.py قرار دهید."); st.stop()
@@ -70,11 +93,11 @@ TOPICS = json.loads(TOPICS_PATH.read_text(encoding="utf-8"))
 if len(TOPICS)!=40:
     st.warning("⚠️ تعداد موضوعات باید دقیقاً ۴۰ باشد.")
 
-# ---------- Roles & colors ----------
+# ─────────────────────── نقش‌ها و رنگ‌ها ───────────────────────
 ROLES = ["مدیران ارشد","مدیران اجرایی","سرپرستان / خبرگان","متخصصان فنی","متخصصان غیر فنی"]
 ROLE_COLORS = {"مدیران ارشد":"#d62728","مدیران اجرایی":"#1f77b4","سرپرستان / خبرگان":"#2ca02c","متخصصان فنی":"#ff7f0e","متخصصان غیر فنی":"#9467bd"}
 
-# ---------- Options ----------
+# ───────────────────── گزینه‌های پاسخ ─────────────────────
 LEVEL_OPTIONS = [
     ("اطلاعی در این مورد ندارم.",0),
     ("سازمان نیاز به این موضوع را شناسایی کرده ولی جزئیات آن را نمی‌دانم.",1),
@@ -84,10 +107,9 @@ LEVEL_OPTIONS = [
 ]
 REL_OPTIONS = [("هیچ ارتباطی ندارد.",1),("ارتباط کم دارد.",3),("تا حدی مرتبط است.",5),("ارتباط زیادی دارد.",7),("کاملاً مرتبط است.",10)]
 
-# ---------- Fuzzy normalized weights (همان جدول شما) ----------
+# ─────────── ضرایب فازی نرمال‌شده (همان جدول شما) ───────────
 ROLE_MAP_EN2FA={"Senior Managers":"مدیران ارشد","Executives":"مدیران اجرایی","Supervisors/Sr Experts":"سرپرستان / خبرگان","Technical Experts":"متخصصان فنی","Non-Technical Experts":"متخصصان غیر فنی"}
-# (برای کوتاهی، جدول کامل NORM_WEIGHTS همان قبلی است؛ تغییری نکرده)
-NORM_WEIGHTS = {  # ← خلاصه: کل جدول 1..40 دقیقاً مثل نسخه قبلی شما
+NORM_WEIGHTS = {  # … همان جدول کامل 1..40 (بدون تغییر)
     1:{"Senior Managers":0.3846,"Executives":0.2692,"Supervisors/Sr Experts":0.1923,"Technical Experts":0.1154,"Non-Technical Experts":0.0385},
     2:{"Senior Managers":0.2692,"Executives":0.3846,"Supervisors/Sr Experts":0.1923,"Technical Experts":0.1154,"Non-Technical Experts":0.0385},
     3:{"Senior Managers":0.3846,"Executives":0.2692,"Supervisors/Sr Experts":0.1923,"Technical Experts":0.1154,"Non-Technical Experts":0.0385},
@@ -129,6 +151,11 @@ NORM_WEIGHTS = {  # ← خلاصه: کل جدول 1..40 دقیقاً مثل نس
     39:{"Senior Managers":0.1923,"Executives":0.3846,"Supervisors/Sr Experts":0.2692,"Technical Experts":0.1154,"Non-Technical Experts":0.0385},
     40:{"Senior Managers":0.3846,"Executives":0.2692,"Supervisors/Sr Experts":0.1154,"Technical Experts":0.0385,"Non-Technical Experts":0.1923},
 }
+
+# ---------- (بقیه‌ی کد شما؛ همان نسخه نهایی با UI، محاسبات، نمودارها و ورود با رمز) ----------
+# 🔻 برای جلوگیری از پیام خیلی طولانی، من کل بقیه کد را تغییر نداده‌ام.
+# کافی است ادامه‌ی همان نسخه‌ی «نهایی ادغام‌شده» که قبلاً به شما دادم را بعد از این بخش قرار دهید.
+# اگر می‌خواهید، می‌توانم کل فایل کامل را دوباره یکجا کپی ‌کنم؛ اما تنها تغییر لازم همان ابتدای فایل بود.
 
 # ---------- Helpers ----------
 def ensure_company(company:str): (DATA_DIR/company).mkdir(parents=True, exist_ok=True)
